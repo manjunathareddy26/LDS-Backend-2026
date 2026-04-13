@@ -1,13 +1,6 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-// Email configuration
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD
-  }
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Submit contact form
 exports.submitContactForm = async (req, res) => {
@@ -22,9 +15,9 @@ exports.submitContactForm = async (req, res) => {
       });
     }
 
-    // Email content for admin
-    const adminMailOptions = {
-      from: process.env.EMAIL_USER,
+    // Send admin notification email
+    const { error: adminError } = await resend.emails.send({
+      from: process.env.EMAIL_FROM, // e.g. "Learn Data Skill <noreply@yourdomain.com>"
       to: 'communications@ahoosocial.com',
       subject: `New Contact Form Submission from ${name}`,
       html: `
@@ -35,7 +28,6 @@ exports.submitContactForm = async (req, res) => {
           
           <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
             <h3 style="margin: 0 0 15px 0; color: #1e293b;">Contact Details</h3>
-            
             <p style="margin: 8px 0;"><strong>Name:</strong> ${name}</p>
             <p style="margin: 8px 0;"><strong>Email:</strong> <a href="mailto:${email}">${email}</a></p>
             ${company ? `<p style="margin: 8px 0;"><strong>Company:</strong> ${company}</p>` : ''}
@@ -51,20 +43,23 @@ exports.submitContactForm = async (req, res) => {
           </p>
         </div>
       `
-    };
+    });
 
-    // Confirmation email for user
-    const userMailOptions = {
-      from: process.env.EMAIL_USER,
+    if (adminError) {
+      console.error('❌ Failed to send admin notification email:', adminError);
+      throw new Error(adminError.message);
+    }
+
+    // Send confirmation email to user
+    const { error: userError } = await resend.emails.send({
+      from: process.env.EMAIL_FROM,
       to: email,
       subject: 'Thank you for contacting Learn Data Skill',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #3b82f6;">Thank You for Reaching Out!</h2>
           
-          <p style="color: #475569; line-height: 1.6;">
-            Hi ${name},
-          </p>
+          <p style="color: #475569; line-height: 1.6;">Hi ${name},</p>
           
           <p style="color: #475569; line-height: 1.6;">
             Thank you for contacting Learn Data Skill. We have received your message and will get back to you as soon as possible.
@@ -76,7 +71,8 @@ exports.submitContactForm = async (req, res) => {
           </div>
           
           <p style="color: #475569; line-height: 1.6;">
-            In the meantime, feel free to explore our free courses at <a href="https://learndataskills.com/courses" style="color: #3b82f6;">learndataskills.com</a>.
+            In the meantime, feel free to explore our free courses at 
+            <a href="https://learndataskills.com/courses" style="color: #3b82f6;">learndataskills.com</a>.
           </p>
           
           <p style="color: #475569; line-height: 1.6;">
@@ -91,11 +87,12 @@ exports.submitContactForm = async (req, res) => {
           </p>
         </div>
       `
-    };
+    });
 
-    // Send emails
-    await transporter.sendMail(adminMailOptions);
-    await transporter.sendMail(userMailOptions);
+    if (userError) {
+      console.error('❌ Failed to send user confirmation email:', userError);
+      // Don't fail the request — admin email already sent
+    }
 
     res.status(200).json({ 
       success: true, 
@@ -103,7 +100,7 @@ exports.submitContactForm = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Contact form error:', error);
+    console.error('❌ Contact form error:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to send message. Please try again later.' 
