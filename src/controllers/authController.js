@@ -23,7 +23,7 @@ transporter.verify((error, success) => {
     console.error('❌ Email transporter verification failed:', error.message);
     console.error('Email config:', {
       host: 'smtp.gmail.com',
-      port: 587,
+      port: 2525,
       user: process.env.EMAIL_USER,
       hasPassword: !!process.env.EMAIL_PASSWORD,
       from: process.env.EMAIL_FROM
