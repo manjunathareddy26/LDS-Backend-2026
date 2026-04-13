@@ -18,11 +18,14 @@ const transporter = nodemailer.createTransport({
 transporter.verify((error, success) => {
   if (error) {
     console.error('❌ Email transporter verification failed:', error.message);
+    console.error('❌ Email error code:', error.code);
+    console.error('❌ Email error response:', error.response);
     console.error('Email config:', {
       host: 'smtp.gmail.com',
       port: 587,
       user: process.env.EMAIL_USER,
       hasPassword: !!process.env.EMAIL_PASSWORD,
+      passwordLength: (process.env.EMAIL_PASSWORD || '').length,
       from: process.env.EMAIL_FROM
     });
   } else {
