@@ -1,10 +1,35 @@
 const { User, OTPSession } = require('../models/user');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 require('dotenv').config();
 
-// Resend configuration
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Email configuration
+const transporter = nodemailer.createTransport({
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false, // true for 465, false for other ports
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: (process.env.EMAIL_PASSWORD || '').trim()
+  }
+});
+
+// Verify transporter connection
+transporter.verify((error, success) => {
+  if (error) {
+    console.error('❌ Email transporter verification failed:', error.message);
+    console.error('Email config:', {
+      host: 'smtp.gmail.com',
+      port: 587,
+      user: process.env.EMAIL_USER,
+      hasPassword: !!process.env.EMAIL_PASSWORD,
+      from: process.env.EMAIL_FROM
+    });
+  } else {
+    console.log('✅ Email transporter verified successfully');
+    console.log('Email sender:', process.env.EMAIL_FROM);
+  }
+});
 
 // Validate password strength
 const validatePassword = (password) => {
@@ -25,7 +50,7 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// Send OTP email via Resend
+// Send OTP email
 const sendOTPEmail = async (email, otp, isSignup = true) => {
   const subject = isSignup ? 'Your OTP for Sign Up' : 'Your OTP for Sign In';
   const htmlMessage = `
@@ -69,40 +94,41 @@ const sendOTPEmail = async (email, otp, isSignup = true) => {
   `;
 
   try {
-    console.log('📧 [OTP Email] Preparing to send via Resend:', {
+    console.log('📧 [OTP Email] Preparing to send email:', {
       to: email,
       from: process.env.EMAIL_FROM,
-      subject,
+      subject: subject,
       type: isSignup ? 'signup' : 'signin'
     });
 
-    const { data, error } = await resend.emails.send({
-      from: process.env.EMAIL_FROM,  // e.g. "Learn Data Skill <noreply@yourdomain.com>"
+    const mailOptions = {
+      from: process.env.EMAIL_FROM,
       to: email,
-      subject,
+      subject: subject,
       html: htmlMessage
-    });
+    };
 
-    if (error) {
-      console.error('❌ [OTP Email] Resend API error:', error);
-      throw new Error(`Resend error: ${error.message}`);
-    }
-
-    console.log('✅ [OTP Email] Email sent successfully via Resend:', {
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ [OTP Email] Email sent successfully:', {
       to: email,
-      messageId: data.id
+      messageId: info.messageId,
+      response: info.response
     });
     return true;
   } catch (err) {
     console.error('❌ [OTP Email] Error sending email:', {
       to: email,
-      error: err.message
+      error: err.message,
+      code: err.code,
+      command: err.command,
+      responseCode: err.responseCode,
+      response: err.response
     });
     throw new Error(`Failed to send OTP email: ${err.message}`);
   }
 };
 
-// Send reset password email via Resend
+// Send reset password email
 const sendResetPasswordEmail = async (email, resetToken) => {
   try {
     const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
@@ -145,26 +171,20 @@ const sendResetPasswordEmail = async (email, resetToken) => {
     </html>
   `;
 
-    console.log('📧 Sending reset password email via Resend to:', email);
-
-    const { data, error } = await resend.emails.send({
+    console.log('📧 Sending reset password email to:', email);
+    const info = await transporter.sendMail({
       from: process.env.EMAIL_FROM,
       to: email,
       subject: 'Reset Your Learn Data Skill Password',
       html: message
     });
-
-    if (error) {
-      console.error('❌ Resend API error for reset password email:', error);
-      throw new Error(`Resend error: ${error.message}`);
-    }
-
-    console.log('✅ Reset password email sent successfully. Message ID:', data.id);
+    console.log('✅ Email sent successfully. Message ID:', info.messageId);
     return true;
   } catch (err) {
     console.error('❌ Error sending reset password email:', {
       email,
-      error: err.message
+      error: err.message,
+      code: err.code
     });
     throw new Error(`Email sending failed: ${err.message}`);
   }
@@ -183,6 +203,8 @@ const authController = {
     }
   },
 
+
+
   // Request OTP for signup
   async requestOTPSignup(req, res) {
     try {
@@ -198,6 +220,7 @@ const authController = {
       const existingUser = await User.findByEmail(email);
       if (existingUser) {
         console.log('❌ [SignUp OTP] Email already registered:', email);
+        // Provide helpful message based on registration method
         if (existingUser.google_id && !existingUser.password_hash) {
           return res.status(400).json({ error: 'This email is already registered with Google Sign-In. Please use "Continue with Google" to sign in.' });
         } else {
@@ -219,6 +242,7 @@ const authController = {
         console.log('✅ [SignUp OTP] OTP email sent successfully:', email);
       } catch (emailErr) {
         console.error('❌ [SignUp OTP] Failed to send OTP email:', emailErr.message);
+        // Delete the OTP since email failed
         await OTPSession.deleteByEmail(email);
         return res.status(500).json({ error: emailErr.message });
       }
@@ -234,7 +258,7 @@ const authController = {
       res.json({
         message: 'OTP sent to email. Please check your inbox.',
         otpSessionId: otpSession.id,
-        expiresIn: 600
+        expiresIn: 600 // 10 minutes in seconds
       });
     } catch (err) {
       console.error('❌ [SignUp OTP] Error:', err.message);
@@ -249,35 +273,55 @@ const authController = {
       console.log('🔑 [SignIn OTP] Request received:', { email, hasPassword: !!password });
 
       if (!email) {
+        console.log('❌ [SignIn OTP] Email is required');
         return res.status(400).json({ error: 'Email is required' });
       }
 
+      // Check if user exists
       const user = await User.findByEmail(email);
       if (!user) {
+        console.log('❌ [SignIn OTP] User not found:', email);
         return res.status(404).json({ error: 'User not found' });
       }
+      console.log('✅ [SignIn OTP] User found:', email);
 
+      // If password is provided, verify it
       if (password) {
         if (!user.password_hash) {
+          console.log('❌ [SignIn OTP] User has no password (Google OAuth only):', email);
           return res.status(400).json({ error: 'This account uses Google Sign-In. Please use "Continue with Google" to sign in.' });
         }
+
         const isPasswordValid = await User.verifyPassword(password, user.password_hash);
         if (!isPasswordValid) {
+          console.log('❌ [SignIn OTP] Invalid password:', email);
           return res.status(401).json({ error: 'Invalid email or password' });
         }
+        console.log('✅ [SignIn OTP] Password verified:', email);
       } else {
+        // No password provided - for Google OAuth users
         if (user.password_hash && !user.google_id) {
+          console.log('❌ [SignIn OTP] Password required for this account:', email);
           return res.status(400).json({ error: 'Password is required for this account' });
         }
+        console.log('✅ [SignIn OTP] Google OAuth or OTP-only signin for:', email);
       }
 
+      // Generate OTP
       const otp = generateOTP();
-      const otpSession = await OTPSession.create(email, otp);
+      console.log('✅ [SignIn OTP] Generated OTP:', { email, otp: otp.substring(0, 3) + '***' });
 
+      // Save OTP to database
+      const otpSession = await OTPSession.create(email, otp);
+      console.log('✅ [SignIn OTP] OTP saved to database:', { email, otpSessionId: otpSession.id });
+
+      // Send OTP email
       try {
         await sendOTPEmail(email, otp, false);
+        console.log('✅ [SignIn OTP] OTP email sent successfully:', email);
       } catch (emailErr) {
         console.error('❌ [SignIn OTP] Failed to send OTP email:', emailErr.message);
+        // Delete the OTP since email failed
         await OTPSession.deleteByEmail(email);
         return res.status(500).json({ error: emailErr.message });
       }
@@ -285,7 +329,7 @@ const authController = {
       res.json({
         message: 'OTP sent to email. Please check your inbox.',
         otpSessionId: otpSession.id,
-        expiresIn: 600
+        expiresIn: 600 // 10 minutes in seconds
       });
     } catch (err) {
       console.error('❌ [SignIn OTP] Error:', err.message);
@@ -299,35 +343,66 @@ const authController = {
       const { email, otp } = req.body;
       console.log('🔐 Verifying signup OTP:', { email });
 
+      // Validate password
       const passwordError = validatePassword(req.body.password);
       if (passwordError) {
+        console.log('❌ Password validation failed:', passwordError);
         return res.status(400).json({ error: passwordError });
       }
 
+      // Verify OTP
       await OTPSession.verify(email, otp);
+      console.log('✅ OTP verified for:', email);
 
+      // Check signup data in session
       const signupData = req.session.signupData;
       if (!signupData || signupData.email !== email) {
+        console.log('❌ Invalid signup session');
         return res.status(400).json({ error: 'Invalid signup session' });
       }
 
+      // Hash password
       const passwordHash = await User.hashPassword(req.body.password);
-      const user = await User.create(email, passwordHash, signupData.first_name, signupData.last_name);
+      console.log('🔒 Password hashed');
+
+      // Create user in database
+      const user = await User.create(
+        email,
+        passwordHash,
+        signupData.first_name,
+        signupData.last_name
+      );
+      console.log('💾 User created in database:', { userId: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name });
+
+      // Verify email
       await User.update(user.id, { is_email_verified: true });
+      console.log('✅ Email verified for user:', user.id);
+
+      // Clean up OTP session
       await OTPSession.deleteVerified(email);
 
+      // Set session
       req.session.userId = user.id;
       req.session.email = user.email;
+
+      // Clear signup data
       delete req.session.signupData;
 
+      // Explicitly save session before responding
       req.session.save((err) => {
         if (err) {
           console.error('❌ [verifyOTPSignup] Session save error:', err);
           return res.status(500).json({ error: 'Failed to save session' });
         }
+        console.log('✅ [verifyOTPSignup] Session saved, responding');
         res.json({
           message: 'Signup successful',
-          user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name }
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+          }
         });
       });
     } catch (err) {
@@ -342,30 +417,44 @@ const authController = {
       const { email, otp } = req.body;
       console.log('🔐 Verifying signin OTP:', { email });
 
+      // Verify OTP
       await OTPSession.verify(email, otp);
+      console.log('✅ OTP verified for signin:', email);
 
+      // Find user
       const user = await User.findByEmail(email);
       if (!user) {
+        console.log('❌ User not found for signin:', email);
         return res.status(404).json({ error: 'User not found' });
       }
+      console.log('✅ User found in database:', { userId: user.id, email: user.email });
 
+      // Clean up OTP session
       await OTPSession.deleteVerified(email);
 
+      // Set session
       req.session.userId = user.id;
       req.session.email = user.email;
+      console.log('✅ Session set for user:', user.id);
 
+      // Explicitly save session before responding
       req.session.save((err) => {
         if (err) {
           console.error('❌ [verifyOTPSignin] Session save error:', err);
           return res.status(500).json({ error: 'Failed to save session' });
         }
+        console.log('✅ [verifyOTPSignin] Session saved, responding');
         res.json({
           message: 'Signin successful',
-          user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name }
-        });
-      });
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+          }
+        });      });
     } catch (err) {
-      console.error('❌ Signin verification error:', err);
+      console.error('\u274c Signin verification error:', err);
       res.status(400).json({ error: err.message });
     }
   },
@@ -374,7 +463,9 @@ const authController = {
   async signupWithPassword(req, res) {
     try {
       const { email, password, confirmPassword, first_name, last_name } = req.body;
+      console.log('📝 Direct signup request:', { email, first_name, last_name });
 
+      // Validate input
       if (!email || !password || !confirmPassword) {
         return res.status(400).json({ error: 'Email and password are required' });
       }
@@ -383,34 +474,61 @@ const authController = {
         return res.status(400).json({ error: 'Passwords do not match' });
       }
 
+      // Validate password strength
       const passwordError = validatePassword(password);
       if (passwordError) {
         return res.status(400).json({ error: passwordError });
       }
 
+      // Check if email already exists
       const existingUser = await User.findByEmail(email);
       if (existingUser) {
         if (existingUser.google_id && !existingUser.password_hash) {
-          return res.status(400).json({ error: 'This email is already registered with Google Sign-In. Please use "Continue with Google" to sign in.' });
+          return res.status(400).json({ 
+            error: 'This email is already registered with Google Sign-In. Please use "Continue with Google" to sign in.' 
+          });
         } else {
           return res.status(400).json({ error: 'Email already registered. Please sign in to your account.' });
         }
       }
 
+      // Hash password
       const passwordHash = await User.hashPassword(password);
-      const user = await User.create(email, passwordHash, first_name || '', last_name || '');
-      await User.update(user.id, { is_email_verified: true });
+      console.log('🔒 Password hashed');
 
+      // Create user in database
+      const user = await User.create(
+        email,
+        passwordHash,
+        first_name || '',
+        last_name || ''
+      );
+      console.log('💾 User created in database:', { userId: user.id, email: user.email });
+
+      // Mark email as verified since no OTP is used
+      await User.update(user.id, { is_email_verified: true });
+      console.log('✅ Email verified for user:', user.id);
+
+      // Set session
       req.session.userId = user.id;
       req.session.email = user.email;
+      console.log('✅ Session set for user:', user.id);
 
+      // Explicitly save session before responding
       req.session.save((err) => {
         if (err) {
+          console.error('❌ [signupWithPassword] Session save error:', err);
           return res.status(500).json({ error: 'Failed to save session' });
         }
+        console.log('✅ [signupWithPassword] Session saved, responding');
         res.json({
           message: 'Signup successful',
-          user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name }
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+          }
         });
       });
     } catch (err) {
@@ -423,35 +541,52 @@ const authController = {
   async signinWithPassword(req, res) {
     try {
       const { email, password } = req.body;
+      console.log('🔐 [Signin Password] Attempting signin:', { email });
 
       if (!email || !password) {
+        console.log('❌ [Signin Password] Missing email or password');
         return res.status(400).json({ error: 'Email and password are required' });
       }
 
       const user = await User.findByEmail(email);
+      
       if (!user) {
+        console.log('❌ [Signin Password] User not found:', email);
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
       if (!user.password_hash) {
-        return res.status(401).json({ error: 'This email is registered with Google OAuth only. Please sign in with Google or use the signup flow to set a password.' });
+        console.log('⚠️ [Signin Password] User exists but has no password (Google OAuth only):', email);
+        return res.status(401).json({ 
+          error: 'This email is registered with Google OAuth only. Please sign in with Google or use the signup flow to set a password.' 
+        });
       }
 
       const isPasswordValid = await User.verifyPassword(password, user.password_hash);
       if (!isPasswordValid) {
+        console.log('❌ [Signin Password] Invalid password for user:', email);
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
+      console.log('✅ [Signin Password] Password verified, setting session:', email);
       req.session.userId = user.id;
       req.session.email = user.email;
 
+      // Explicitly save session before responding
       req.session.save((err) => {
         if (err) {
+          console.error('❌ [Signin Password] Session save error:', err);
           return res.status(500).json({ error: 'Failed to save session' });
         }
+        console.log('✅ [Signin Password] Session saved, responding with user data');
         res.json({
           message: 'Signin successful',
-          user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name }
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+          }
         });
       });
     } catch (err) {
@@ -466,23 +601,40 @@ const authController = {
       const { id, emails, displayName } = req.user;
       const email = emails[0].value;
       const names = displayName.split(' ');
+      console.log('🔐 Google OAuth callback:', { googleId: id, email, displayName });
 
       let user = await User.findByGoogleId(id);
+      console.log('🔍 Existing Google user found:', !!user);
 
       if (!user) {
+        // Check if email exists
         const existingUser = await User.findByEmail(email);
         if (existingUser) {
+          console.log('❌ Email already registered with different method:', email);
           return res.status(400).json({ error: 'Email already registered with different method' });
         }
-        user = await User.createFromGoogle(email, names[0], names[1] || '', id);
+
+        user = await User.createFromGoogle(
+          email,
+          names[0],
+          names[1] || '',
+          id
+        );
+        console.log('💾 New Google user created:', { userId: user.id, email: user.email });
       }
 
       req.session.userId = user.id;
       req.session.email = user.email;
+      console.log('✅ Session set for Google user:', user.id);
 
       res.json({
         message: 'Google signin successful',
-        user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name }
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name
+        }
       });
     } catch (err) {
       console.error('❌ Google callback error:', err);
@@ -493,19 +645,32 @@ const authController = {
   // Get current user
   async getCurrentUser(req, res) {
     try {
+      console.log('📋 [getCurrentUser] Session:', req.session);
+      console.log('📋 [getCurrentUser] req.session.userId:', req.session.userId);
+      console.log('📋 [getCurrentUser] req.session.passport.user:', req.session.passport?.user);
+      
+      // Check for userId from manual session or Passport serialization
       const userId = req.session.userId || req.session.passport?.user;
-
+      
       if (!userId) {
+        console.log('❌ [getCurrentUser] Not authenticated - no userId in session');
         return res.status(401).json({ error: 'Not authenticated' });
       }
 
       const user = await User.findById(userId);
       if (!user) {
+        console.log('❌ [getCurrentUser] User not found in database:', req.session.userId);
         return res.status(404).json({ error: 'User not found' });
       }
 
+      console.log('✅ [getCurrentUser] User found:', user.email);
       res.json({
-        user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name }
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name
+        }
       });
     } catch (err) {
       console.error('❌ [getCurrentUser] Error:', err);
@@ -527,40 +692,56 @@ const authController = {
   async forgotPassword(req, res) {
     try {
       const { email } = req.body;
+      console.log('🔐 Forgot password request for:', email);
 
       if (!email || !email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+        console.log('❌ Invalid email format:', email);
         return res.status(400).json({ error: 'Valid email is required' });
       }
 
+      // Check if user exists
       const user = await User.findByEmail(email);
       if (!user) {
-        return res.status(404).json({
+        console.log('⚠️  Forgot password requested for non-existent email:', email);
+        return res.status(404).json({ 
           error: 'No account found with this email. Please sign up first.',
           code: 'NOT_REGISTERED'
         });
       }
 
+      // If user signed up with Google OAuth only (no password), BLOCK them
       if (!user.password_hash && user.google_id) {
-        return res.status(400).json({
+        console.log('⚠️  ❌ Password reset blocked for Google-only user:', email);
+        return res.status(400).json({ 
           error: 'This account is signed in with Google. Please sign in using "Continue with Google".',
           code: 'GOOGLE_ACCOUNT'
         });
       }
 
+      // Generate secure reset token
       const resetToken = crypto.randomBytes(32).toString('hex');
+      
+      // Store token in database with expiry
       await User.setResetToken(email, resetToken);
+      console.log('✅ Reset token generated for:', email);
 
+      // Send reset password email
       try {
         await sendResetPasswordEmail(email, resetToken);
+        console.log('📧 Reset password email sent successfully to:', email);
       } catch (emailErr) {
         console.error('❌ Email sending failed:', emailErr.message);
-        return res.status(500).json({
+        // Still return success message to clients (for security - don't leak whether email exists)
+        // But log it for debugging
+        return res.status(500).json({ 
           error: 'Failed to send reset email. Please try again later.',
-          details: emailErr.message
+          details: emailErr.message 
         });
       }
 
-      res.json({ message: 'If an account with that email exists, a password reset link has been sent.' });
+      res.json({ 
+        message: 'If an account with that email exists, a password reset link has been sent.' 
+      });
     } catch (err) {
       console.error('❌ Forgot password error:', err);
       res.status(500).json({ error: 'Failed to process forgot password request: ' + err.message });
@@ -581,7 +762,10 @@ const authController = {
         return res.status(400).json({ error: 'Invalid or expired reset token' });
       }
 
-      res.json({ message: 'Token is valid', email: user.email });
+      res.json({ 
+        message: 'Token is valid',
+        email: user.email
+      });
     } catch (err) {
       console.error('❌ Verify reset token error:', err);
       res.status(500).json({ error: 'Failed to verify reset token' });
@@ -593,20 +777,39 @@ const authController = {
     try {
       const { token, newPassword, confirmPassword } = req.body;
 
-      if (!token) return res.status(400).json({ error: 'Reset token is required' });
-      if (!newPassword || !confirmPassword) return res.status(400).json({ error: 'Both passwords are required' });
-      if (newPassword !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match' });
+      if (!token) {
+        return res.status(400).json({ error: 'Reset token is required' });
+      }
 
+      if (!newPassword || !confirmPassword) {
+        return res.status(400).json({ error: 'Both passwords are required' });
+      }
+
+      if (newPassword !== confirmPassword) {
+        return res.status(400).json({ error: 'Passwords do not match' });
+      }
+
+      // Validate password strength
       const passwordError = validatePassword(newPassword);
-      if (passwordError) return res.status(400).json({ error: passwordError });
+      if (passwordError) {
+        return res.status(400).json({ error: passwordError });
+      }
 
+      // Verify token
       const user = await User.findByResetToken(token);
-      if (!user) return res.status(400).json({ error: 'Invalid or expired reset token' });
+      if (!user) {
+        return res.status(400).json({ error: 'Invalid or expired reset token' });
+      }
 
+      // Hash new password
       const newPasswordHash = await User.hashPassword(newPassword);
-      await User.updatePassword(user.id, newPasswordHash);
+      console.log('🔒 New password hashed');
 
-      res.json({
+      // Update password and clear reset token
+      await User.updatePassword(user.id, newPasswordHash);
+      console.log('✅ Password updated for user:', user.email);
+
+      res.json({ 
         message: 'Password reset successfully. Please sign in with your new password.',
         email: user.email
       });
