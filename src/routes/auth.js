@@ -71,7 +71,13 @@ router.get('/google/callback',
       });
     } catch (err) {
       console.error('❌ [Google Callback] Error:', err);
-      res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/signin?error=${encodeURIComponent(err.message)}`);
+      const userData = encodeURIComponent(JSON.stringify({
+  id: user.id,
+  email: user.email,
+  first_name: user.first_name,
+  last_name: user.last_name
+}));
+res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/google/callback?user=${userData}`);
     }
   }
 );
