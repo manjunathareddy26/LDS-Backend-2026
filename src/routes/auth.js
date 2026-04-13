@@ -36,48 +36,40 @@ router.get('/google/callback',
     try {
       console.log('📋 [Google Callback] Starting callback handler');
       console.log('📋 [Google Callback] req.user:', req.user);
-      
-      // req.user is already the deserialized user object from the database
+
       const { id, email, first_name, last_name } = req.user;
-      
+
       if (!email || !id) {
-        console.error('❌ [Google Callback] Missing email or user ID from deserialized user');
+        console.error('❌ [Google Callback] Missing email or user ID');
         throw new Error('Invalid user data');
       }
 
-      console.log('🔐 [Google Callback] Processing:', { googleId: id, email, first_name, last_name });
-
-      const User = require('../models/user').User;
-
-      // User already exists in database (req.user is deserialized data)
       const user = req.user;
       console.log('✅ [Google Callback] User verified:', { userId: user.id, email: user.email });
 
-      // Set session
       req.session.userId = user.id;
       req.session.email = user.email;
-      console.log('✅ [Google Callback] Session userId set:', req.session.userId);
-      console.log('✅ [Google Callback] Session email set:', req.session.email);
 
-      // Save session explicitly and wait
       req.session.save((err) => {
         if (err) {
           console.error('❌ [Google Callback] Session save error:', err);
           return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/signin?error=Session%20save%20error`);
         }
-        console.log('✅ [Google Callback] Session saved successfully');
-        console.log('✅ [Google Callback] Redirecting to frontend callback...');
-        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/google/callback`);
+        console.log('✅ [Google Callback] Session saved, redirecting...');
+
+        const userData = encodeURIComponent(JSON.stringify({
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name
+        }));
+
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/google/callback?user=${userData}`);
       });
+
     } catch (err) {
       console.error('❌ [Google Callback] Error:', err);
-      const userData = encodeURIComponent(JSON.stringify({
-  id: user.id,
-  email: user.email,
-  first_name: user.first_name,
-  last_name: user.last_name
-}));
-res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/google/callback?user=${userData}`);
+      res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/signin?error=${encodeURIComponent(err.message)}`);
     }
   }
 );
@@ -88,7 +80,7 @@ router.get('/test-session', (req, res) => {
   console.log('🧪 [Test Session] req.sessionID:', req.sessionID);
   console.log('🧪 [Test Session] req.user:', req.user);
   console.log('🧪 [Test Session] Cookies:', req.headers.cookie);
-  
+
   res.json({
     session: req.session,
     sessionID: req.sessionID,
@@ -116,14 +108,13 @@ router.post('/reset-password', authController.resetPassword);
 router.post('/test-send-otp', async (req, res) => {
   try {
     const { email } = req.body;
-    
+
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
 
     console.log('🧪 [Test OTP] Sending test OTP email to:', email);
 
-    // Import the sendOTPEmail function from authController
     const sendOTPEmail = require('../controllers/authController').sendOTPEmail;
     const testOTP = '123456';
 
@@ -137,7 +128,7 @@ router.post('/test-send-otp', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ [Test OTP] Error:', err.message);
-    res.status(500).json({ 
+    res.status(500).json({
       error: err.message,
       note: 'Check the backend console for detailed error logs'
     });
